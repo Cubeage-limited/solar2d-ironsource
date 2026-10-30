@@ -28,19 +28,30 @@ jobs:
       - name: Run JVM regression tests
         run: bash tests/jvm/run.sh
 
-  # Aggregate gate: the merge queue requires only this check. Skipped jobs pass;
-  # a failed or cancelled gating job fails it.
+  # The required gate accepts only successful selected jobs.
   ci-ok:
-    if: always()
+    if: ${{ always() }}
     needs: [jvm-tests]
     runs-on: sylphx-linux-standard
     timeout-minutes: 5
     steps:
-      - name: All gating jobs passed
+      - name: Require every selected job to succeed
         env:
-          RESULTS: ${{ join(needs.*.result, ' ') }}
+          NEEDS: ${{ toJSON(needs) }}
+          REQUIRED: jvm-tests
         run: |
-          echo "gating job results: $RESULTS"
-          for r in $RESULTS; do
-            case "$r" in failure|cancelled) exit 1 ;; esac
-          done
+          python3 - <<'PY'
+          import json, os, sys
+          needs = json.loads(os.environ["NEEDS"])
+          required = {job.strip() for job in os.environ["REQUIRED"].split(",") if job.strip()}
+          if not isinstance(needs, dict) or not needs or not required:
+              sys.exit("ci-ok: needs and required jobs must be nonempty")
+          failed = {job: "absent" for job in required - needs.keys()}
+          for job, value in sorted(needs.items()):
+              result = value.get("result") if isinstance(value, dict) else None
+              print(f"{job}: {result}")
+              if result not in ("success", "skipped") or (job in required and result != "success"):
+                  failed[job] = result or "absent"
+          if failed:
+              sys.exit(f"ci-ok: required jobs did not succeed: {failed}")
+          PY
